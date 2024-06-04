@@ -21,3 +21,8 @@ go run main.go node.go -f [folderID]
 ```
 go run main.go node.go -f [folderID] -d [driveID]
 ```
+
+## how to get folder ID and dirve ID
+
+For example, if the link is "https://drive.google.com/drive/folders/ABC123456789", then the folder ID is "ABC123456789".
+Drive ID can get like above as a root folder.
