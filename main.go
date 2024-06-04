@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
 
 var (
@@ -20,12 +21,47 @@ const (
 	FileFields = "nextPageToken, files(id, name, mimeType, parents)"
 )
 
-func getFileName(srv *drive.Service, id string) (string, error) {
-	res, err := srv.Files.Get(id).SupportsAllDrives(true).Fields("name").Do()
+func getFileName(srv *drive.Service, driveID string, folderID string) (string, error) {
+	var res *drive.File
+	var err error
+	if driveID == "" {
+		res, err = srv.Files.Get(folderID).Fields("name").Do()
+	} else {
+		res, err = srv.Files.Get(folderID).SupportsAllDrives(true).Fields("name").Do()
+	}
 	if err != nil {
 		return "", err
 	}
 	return res.Name, nil
+}
+
+func listFiles(srv *drive.Service, driveID string, query string, fields string, pageToken string) (*drive.FileList, error) {
+	var res *drive.FileList
+	var err error
+	if driveID == "" {
+		res, err = srv.Files.List().
+			Q(query).
+			Fields(googleapi.Field(fields)).
+			PageToken(pageToken).
+			PageSize(PageLimit).
+			Do()
+	} else {
+		res, err = srv.Files.List().
+			Corpora("drive").
+			IncludeItemsFromAllDrives(true).
+			SupportsAllDrives(true).
+			DriveId(driveID).
+			Q(query).
+			Fields(googleapi.Field(fields)).
+			PageToken(pageToken).
+			PageSize(PageLimit).
+			Do()
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return res, nil
 }
 
 func addChildren(srv *drive.Service, folderID string, node *Node) error {
@@ -34,16 +70,7 @@ func addChildren(srv *drive.Service, folderID string, node *Node) error {
 	query := fmt.Sprintf("'%s' in parents and trashed=false", folderID)
 	var pageToken string
 	for {
-		res, err := srv.Files.List().
-			Corpora("drive").
-			IncludeItemsFromAllDrives(true).
-			SupportsAllDrives(true).
-			DriveId(*driveID).
-			Q(query).
-			Fields(FileFields).
-			PageToken(pageToken).
-			PageSize(PageLimit).
-			Do()
+		res, err := listFiles(srv, *driveID, query, FileFields, pageToken)
 		if err != nil {
 			log.Printf("Unable to retrieve files: %v", err)
 			return err
@@ -90,7 +117,7 @@ func printNode(node *Node, prefix string) {
 }
 
 func buildTree(srv *drive.Service, folderID string) (*Node, error) {
-	name, err := getFileName(srv, folderID)
+	name, err := getFileName(srv, *driveID, folderID)
 	if err != nil {
 		return nil, err
 	}
