@@ -2,30 +2,30 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 
 	"google.golang.org/api/drive/v3"
 )
 
-const (
-	folderID   = "xxxxx"
-	folderType = "application/vnd.google-apps.folder"
+var (
+	folderID = flag.String("f", "", "folder id")
+	driveID  = flag.String("d", "", "drive id")
 )
 
-type Node struct {
-	ID       string
-	Name     string
-	IsDir    bool
-	Children []*Node
-}
+const (
+	FolderType = "application/vnd.google-apps.folder"
+	PageLimit  = 100
+	FileFields = "nextPageToken, files(id, name, mimeType, parents)"
+)
 
-func NewNode(id string, name string, isDir bool) *Node {
-	return &Node{ID: id, Name: name, IsDir: isDir, Children: []*Node{}}
-}
-
-func (n *Node) AddChild(child *Node) {
-	n.Children = append(n.Children, child)
+func getFileName(srv *drive.Service, id string) (string, error) {
+	res, err := srv.Files.Get(id).SupportsAllDrives(true).Fields("name").Do()
+	if err != nil {
+		return "", err
+	}
+	return res.Name, nil
 }
 
 func addChildren(srv *drive.Service, folderID string, node *Node) error {
@@ -35,13 +35,18 @@ func addChildren(srv *drive.Service, folderID string, node *Node) error {
 	var pageToken string
 	for {
 		res, err := srv.Files.List().
+			Corpora("drive").
+			IncludeItemsFromAllDrives(true).
+			SupportsAllDrives(true).
+			DriveId(*driveID).
 			Q(query).
+			Fields(FileFields).
 			PageToken(pageToken).
-			PageSize(100).
-			Fields("nextPageToken, files(id, name, mimeType, parents)").
+			PageSize(PageLimit).
 			Do()
 		if err != nil {
-			log.Fatalf("Unable to retrieve files: %v", err)
+			log.Printf("Unable to retrieve files: %v", err)
+			return err
 		}
 
 		files = append(files, res.Files...)
@@ -52,10 +57,11 @@ func addChildren(srv *drive.Service, folderID string, node *Node) error {
 		}
 	}
 
+	// Create node and add as a child node
 	for _, f := range files {
 		child := createNodeFromFile(f)
 		node.AddChild(child)
-		if f.MimeType == folderType {
+		if f.MimeType == FolderType {
 			err := addChildren(srv, f.Id, child)
 			if err != nil {
 				return err
@@ -67,23 +73,28 @@ func addChildren(srv *drive.Service, folderID string, node *Node) error {
 }
 
 func createNodeFromFile(f *drive.File) *Node {
-	if f.MimeType == folderType {
+	if f.MimeType == FolderType {
 		return NewNode(f.Id, f.Name, true)
 	}
 	return NewNode(f.Id, f.Name, false)
 }
 
 func printNode(node *Node, prefix string) {
-	fmt.Println(prefix + node.Name)
-	if node.IsDir {
-		for _, child := range node.Children {
-			printNode(child, prefix+"  ")
-		}
+	if !node.IsDir {
+		fmt.Println(prefix + node.Name)
+		return
+	}
+	for _, child := range node.Children {
+		printNode(child, fmt.Sprintf("%s%s/", prefix, node.Name))
 	}
 }
 
 func buildTree(srv *drive.Service, folderID string) (*Node, error) {
-	root := NewNode(folderID, "root", true)
+	name, err := getFileName(srv, folderID)
+	if err != nil {
+		return nil, err
+	}
+	root := NewNode(folderID, name, true)
 	if err := addChildren(srv, folderID, root); err != nil {
 		return nil, err
 	}
@@ -91,14 +102,21 @@ func buildTree(srv *drive.Service, folderID string) (*Node, error) {
 }
 
 func main() {
-	ctx := context.Background()
+	flag.Parse()
+	if *folderID == "" {
+		log.Fatal("-f (folderID) must be set")
+	}
 
 	// Google Application Default Credentials are used for authentication.
+	ctx := context.Background()
 	srv, err := drive.NewService(ctx)
 	if err != nil {
 		panic(err)
 	}
 
-	tree, _ := buildTree(srv, folderID)
-	printNode(tree, "")
+	tree, err := buildTree(srv, *folderID)
+	if err != nil {
+		log.Fatalf("Unable to build file tree: %v", err)
+	}
+	printNode(tree, "/")
 }
