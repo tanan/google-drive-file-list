@@ -13,13 +13,13 @@ gcloud auth application-default login --scopes "https://www.googleapis.com/auth/
 - your drive
 
 ```
-go run main.go node.go -f [folderID]
+go run . -f [folderID]
 ```
 
 - shared drive
 
 ```
-go run main.go node.go -f [folderID] -d [driveID]
+go run . -f [folderID] -d [driveID]
 ```
 
 ## how to get folder ID and dirve ID
