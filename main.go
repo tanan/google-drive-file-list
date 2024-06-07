@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"os"
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
@@ -106,13 +108,14 @@ func createNodeFromFile(f *drive.File) *Node {
 	return NewNode(f.Id, f.Name, false)
 }
 
-func printNode(node *Node, prefix string) {
+func printNode(w io.Writer, node *Node, prefix string) {
 	if !node.IsDir {
-		fmt.Println(prefix + node.Name)
+		// fmt.Println(prefix + node.Name)
+		w.Write([]byte(fmt.Sprintln(prefix + node.Name)))
 		return
 	}
 	for _, child := range node.Children {
-		printNode(child, fmt.Sprintf("%s%s/", prefix, node.Name))
+		printNode(w, child, fmt.Sprintf("%s%s/", prefix, node.Name))
 	}
 }
 
@@ -145,5 +148,5 @@ func main() {
 	if err != nil {
 		log.Fatalf("Unable to build file tree: %v", err)
 	}
-	printNode(tree, "/")
+	printNode(os.Stdout, tree, "/")
 }
