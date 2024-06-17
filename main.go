@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
+	"time"
 
 	"google.golang.org/api/drive/v3"
-	"google.golang.org/api/googleapi"
 )
 
 var (
@@ -20,59 +20,19 @@ var (
 const (
 	FolderType = "application/vnd.google-apps.folder"
 	PageLimit  = 100
-	FileFields = "nextPageToken, files(id, name, mimeType, parents)"
+	FileFields = "nextPageToken, files(id, name, mimeType, parents, createdTime, modifiedTime)"
+	TimeFormat = "2006-01-02T15:04"
 )
 
-func getFileName(srv *drive.Service, driveID string, folderID string) (string, error) {
-	var res *drive.File
-	var err error
-	if driveID == "" {
-		res, err = srv.Files.Get(folderID).Fields("name").Do()
-	} else {
-		res, err = srv.Files.Get(folderID).SupportsAllDrives(true).Fields("name").Do()
-	}
-	if err != nil {
-		return "", err
-	}
-	return res.Name, nil
-}
-
-func listFiles(srv *drive.Service, driveID string, query string, fields string, pageToken string) (*drive.FileList, error) {
-	var res *drive.FileList
-	var err error
-	if driveID == "" {
-		res, err = srv.Files.List().
-			Q(query).
-			Fields(googleapi.Field(fields)).
-			PageToken(pageToken).
-			PageSize(PageLimit).
-			Do()
-	} else {
-		res, err = srv.Files.List().
-			Corpora("drive").
-			IncludeItemsFromAllDrives(true).
-			SupportsAllDrives(true).
-			DriveId(driveID).
-			Q(query).
-			Fields(googleapi.Field(fields)).
-			PageToken(pageToken).
-			PageSize(PageLimit).
-			Do()
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	return res, nil
-}
-
-func addChildren(srv *drive.Service, folderID string, node *Node) error {
+func addChildren(client *GoogleDriveClient, driveID string, folderID string, node *Node) error {
 	// List files in the current folder
 	var files []*drive.File
 	query := fmt.Sprintf("'%s' in parents and trashed=false", folderID)
 	var pageToken string
 	for {
-		res, err := listFiles(srv, *driveID, query, FileFields, pageToken)
+		opts := NewOptions(DriveID(driveID), Query(query), Fields(FileFields), PageToken(pageToken), PageSize(PageLimit))
+		executor := Retry(client.ListFiles, 3, 10*time.Second)
+		res, err := executor(context.Background(), opts)
 		if err != nil {
 			log.Printf("Unable to retrieve files: %v", err)
 			return err
@@ -91,7 +51,7 @@ func addChildren(srv *drive.Service, folderID string, node *Node) error {
 		child := createNodeFromFile(f)
 		node.AddChild(child)
 		if f.MimeType == FolderType {
-			err := addChildren(srv, f.Id, child)
+			err := addChildren(client, driveID, f.Id, child)
 			if err != nil {
 				return err
 			}
@@ -101,17 +61,21 @@ func addChildren(srv *drive.Service, folderID string, node *Node) error {
 	return nil
 }
 
-func createNodeFromFile(f *drive.File) *Node {
-	if f.MimeType == FolderType {
-		return NewNode(f.Id, f.Name, true)
-	}
-	return NewNode(f.Id, f.Name, false)
+func strToTime(t string) time.Time {
+	parsedTime, _ := time.Parse(time.RFC3339, t)
+	return parsedTime
 }
 
-func printNode(w io.Writer, node *Node, prefix string) {
+func createNodeFromFile(f *drive.File) *Node {
+	if f.MimeType == FolderType {
+		return NewNode(f.Id, f.Name, true, strToTime(f.CreatedTime), strToTime(f.ModifiedTime))
+	}
+	return NewNode(f.Id, f.Name, false, strToTime(f.CreatedTime), strToTime(f.ModifiedTime))
+}
+
+func printNode(w *csv.Writer, node *Node, prefix string) {
 	if !node.IsDir {
-		// fmt.Println(prefix + node.Name)
-		w.Write([]byte(fmt.Sprintln(prefix + node.Name)))
+		w.Write([]string{fmt.Sprint(prefix + node.Name), node.CreatedTime.Format(TimeFormat), node.ModifiedTime.Format(TimeFormat)})
 		return
 	}
 	for _, child := range node.Children {
@@ -119,13 +83,15 @@ func printNode(w io.Writer, node *Node, prefix string) {
 	}
 }
 
-func buildTree(srv *drive.Service, folderID string) (*Node, error) {
-	name, err := getFileName(srv, *driveID, folderID)
+func buildTree(client *GoogleDriveClient, driveID string, folderID string) (*Node, error) {
+	opts := NewOptions(DriveID(driveID), FolderID(folderID))
+	executor := Retry(client.GetFileName, 3, 5*time.Second)
+	name, err := executor(context.Background(), opts)
 	if err != nil {
 		return nil, err
 	}
-	root := NewNode(folderID, name, true)
-	if err := addChildren(srv, folderID, root); err != nil {
+	root := NewNode(folderID, name, true, time.Now(), time.Now())
+	if err := addChildren(client, driveID, folderID, root); err != nil {
 		return nil, err
 	}
 	return root, nil
@@ -138,15 +104,13 @@ func main() {
 	}
 
 	// Google Application Default Credentials are used for authentication.
-	ctx := context.Background()
-	srv, err := drive.NewService(ctx)
-	if err != nil {
-		panic(err)
-	}
+	client := NewGoogleDriveClient(context.Background())
 
-	tree, err := buildTree(srv, *folderID)
+	tree, err := buildTree(client, *driveID, *folderID)
 	if err != nil {
 		log.Fatalf("Unable to build file tree: %v", err)
 	}
-	printNode(os.Stdout, tree, "/")
+	w := csv.NewWriter(os.Stdout)
+	defer w.Flush()
+	printNode(w, tree, "/")
 }
